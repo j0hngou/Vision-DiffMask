@@ -14,209 +14,123 @@ from transformers import (
 )
 from typing import Callable, List, Optional, Tuple, Union
 from utils.setters import vit_setter
-from utils.metrics import accuracy_precision_recall_f1
 
 
 class ImageInterpretationNet(pl.LightningModule):
+    """Applies DiffMask to a Vision Transformer (ViT) model.
+
+    This module consists of a pre-trained ViT model and a list of DiffMask gates. The
+    input is passed through the ViT and the hidden states are collected. Then the hidden
+    states are passed as input to DiffMask, which returns a predicted mask for the input.
+
+    Args:
+        model (ViTForImageClassification): a ViT from Hugging Face
+        lr (dict): a dictionary with learning rates for diffmask, beta and lambda
+        mu (float): the tolorance of the KL divergence between y and y_hat
+    """
+
     def __init__(
         self,
         model: ViTForImageClassification,
-        lr: float = 3e-4,
-        eps: float = 0.1,
-        eps_valid: float = 0.8,
-        acc_valid: float = 0.75,
-        lr_placeholder: float = 1e-3,
-        lr_alpha: float = 0.3,
+        lr: dict[str, float] = {"diff_mask": 3e-4, "beta": 1e-3, "lamda": 3e-1},
+        mu: float = 0.1,
     ):
+        assert (
+            "diff_mask" in lr and "beta" in lr and "lamda" in lr
+        ), "lr dictionary must contain diff_mask, beta and lamda"
+
         super().__init__()
 
         self.save_hyperparameters(ignore=["model"])
 
+        # Freeze ViT's parameters
         self.model = model
         for param in self.model.parameters():
             param.requires_grad = False
 
-        self.gate = DiffMaskGateInput(
-            hidden_size=model.config.hidden_size,
-            hidden_attention=model.config.hidden_size // 4,
+        # Create DiffMask
+        # TODO: check arguments & modify DiffMask signature
+        self.diff_mask = DiffMaskGateInput(
+            hidden_size=self.model.config.hidden_size,
+            hidden_attention=self.model.config.hidden_size // 4,
             max_position_embeddings=1,
-            num_hidden_layers=model.config.num_hidden_layers,
+            num_hidden_layers=self.model.config.num_hidden_layers,
         )
 
-        self.alpha = torch.nn.ParameterList(
-            [
-                torch.nn.Parameter(torch.ones(()))
-                for _ in range(self.model.config.num_hidden_layers + 2)
-            ]
-        )
-
-        self.register_buffer(
-            "running_acc", torch.ones((self.model.config.num_hidden_layers + 2,))
-        )
-        self.register_buffer(
-            "running_l0", torch.ones((self.model.config.num_hidden_layers + 2,))
-        )
-        self.register_buffer(
-            "running_steps", torch.zeros((self.model.config.num_hidden_layers + 2,))
-        )
-
-    def forward_explainer(
-        self, x: Tensor, attribution: bool = False
-    ) -> Union[Tensor, Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, int, int]]:
-        outputs = self.model(x, output_hidden_states=True)
-        logits_orig, hidden_states = outputs.logits, outputs.hidden_states
-
-        # TODO: deal with these
-        # layer_pred = torch.randint(len(hidden_states), ()).item()
-        layer_pred = 4
-        layer_drop = 0
-
-        (
-            new_hidden_state,
-            gates,
-            expected_L0,
-            gates_full,
-            expected_L0_full,
-        ) = self.gate(
-            hidden_states=hidden_states,
-            layer_pred=None
-            if attribution
-            else layer_pred,  # if attribution, we get all the hidden states
-        )
-
-        if attribution:
-            return expected_L0_full
-        else:
-            new_hidden_states = (
-                [None] * layer_drop
-                + [new_hidden_state]
-                + [None] * (len(hidden_states) - layer_drop - 1)
-            )
-
-            logits, _ = vit_setter(self.model, x, new_hidden_states)
-
-        return (
-            logits,
-            logits_orig,
-            gates,
-            expected_L0,
-            gates_full,
-            expected_L0_full,
-            layer_drop,
-            layer_pred,
+        # Create Lagrangian for dual optimization
+        self.lamda = torch.nn.ParameterList(
+            [torch.nn.Parameter(torch.ones(()))]
+            * (self.model.config.num_hidden_layers + 2)
         )
 
     def forward(self, x: Tensor) -> Tensor:
-        return self.model(x).logits
+        # Forward input through freezed ViT & collect hidden states
+        hidden_states = self.model(x, output_hidden_states=True).hidden_states
+
+        # Forward hidden states through DiffMask
+        expected_L0_full = self.diff_mask(hidden_states=hidden_states, layer_pred=None)
+
+        return expected_L0_full
 
     def training_step(self, batch: Tuple[Tensor, Tensor], *args, **kwargs) -> dict:
-        x, y = batch
+        images, _ = batch
 
-        (
-            logits,
-            logits_orig,
-            gates,
-            expected_L0,
-            gates_full,
-            expected_L0_full,
-            layer_drop,
-            layer_pred,
-        ) = self.forward_explainer(x)
+        # Pass original image from ViT and collect logits & hidden states
+        outputs = self.model(images, output_hidden_states=True)
+        logits_unmasked, hidden_states_unmasked = outputs.logits, outputs.hidden_states
 
+        # Forward hidden states through DiffMask
+        deepest_layer = torch.randint(len(hidden_states_unmasked), ()).item()
+        hidden_states_masked, _, expected_L0, _, _, = self.diff_mask(
+            hidden_states=hidden_states_unmasked,
+            layer_pred=deepest_layer,
+        )
+
+        # Set new hidden states in the ViT and forward again
+        hidden_states_masked = [hidden_states_masked] + [None] * (len(hidden_states_unmasked) - 1)
+        logits_masked, _ = vit_setter(self.model, images, hidden_states_masked)
+
+        # Calculate loss
         loss_c = (
             torch.distributions.kl_divergence(
-                torch.distributions.Categorical(logits=logits_orig),
-                torch.distributions.Categorical(logits=logits),
+                torch.distributions.Categorical(logits=logits_unmasked),
+                torch.distributions.Categorical(logits=logits_masked),
             )
-            - self.hparams.eps
+            - self.hparams.mu
         )
 
         loss_g = expected_L0.mean(-1)
 
-        loss = self.alpha[layer_pred] * loss_c + loss_g
+        loss = torch.mean(self.lamda[deepest_layer] * loss_c + loss_g, dim=-1)
 
-        acc, _, _, _ = accuracy_precision_recall_f1(
-            logits.argmax(-1), logits_orig.argmax(-1), average=True
-        )
+        # TODO: Log Metrics
 
-        l0 = expected_L0.exp().mean(-1)
-
-        outputs_dict = {
-            "loss_c": loss_c.mean(-1),
-            "loss_g": loss_g.mean(-1),
-            "alpha": self.alpha[layer_pred].mean(-1),
-            "acc": acc,
-            "l0": l0.mean(-1),
-            "layer_pred": layer_pred,
-            "r_acc": self.running_acc[layer_pred],
-            "r_l0": self.running_l0[layer_pred],
-            "r_steps": self.running_steps[layer_pred],
-            "debug_loss": loss.mean(-1),
-        }
-
-        outputs_dict = {
-            "loss": loss.mean(-1),
-            **outputs_dict,
-            "log": outputs_dict,
-            "progress_bar": outputs_dict,
-        }
-
-        outputs_dict = {
-            "{}{}".format("" if self.training else "val_", k): v
-            for k, v in outputs_dict.items()
-        }
-
-        if self.training:
-            self.running_acc[layer_pred] = (
-                self.running_acc[layer_pred] * 0.9 + acc * 0.1
-            )
-            self.running_l0[layer_pred] = (
-                self.running_l0[layer_pred] * 0.9 + l0.mean(-1) * 0.1
-            )
-            self.running_steps[layer_pred] += 1
-
-        return outputs_dict
-
-    def validation_epoch_end(self, outputs: List[dict]):
-        outputs_dict = {
-            k: [e[k] for e in outputs if k in e]
-            for k in ("val_loss_c", "val_loss_g", "val_acc", "val_l0")
-        }
-
-        outputs_dict = {k: sum(v) / len(v) for k, v in outputs_dict.items()}
-
-        outputs_dict["val_loss_c"] += self.hparams.eps
-
-        outputs_dict = {
-            "val_loss": outputs_dict["val_l0"]
-            if outputs_dict["val_loss_c"] <= self.hparams.eps_valid
-            and outputs_dict["val_acc"] >= self.hparams.acc_valid
-            else torch.full_like(outputs_dict["val_l0"], float("inf")),
-            **outputs_dict,
-            "log": outputs_dict,
-        }
-
-        return outputs_dict
+        return loss
 
     def configure_optimizers(self) -> Tuple[List[Optimizer], List[_LRScheduler]]:
         optimizers = [
             LookaheadRMSprop(
                 params=[
-                    {"params": self.gate.g_hat.parameters(), "lr": self.hparams.lr},
                     {
-                        "params": self.gate.placeholder.parameters()
-                        if isinstance(self.gate.placeholder, torch.nn.ParameterList)
-                        else [self.gate.placeholder],
-                        "lr": self.hparams.lr_placeholder,
+                        "params": self.diff_mask.g_hat.parameters(),
+                        "lr": self.hparams.lr["diff_mask"],
+                    },
+                    {
+                        "params": self.diff_mask.placeholder.parameters()
+                        if isinstance(
+                            self.diff_mask.placeholder, torch.nn.ParameterList
+                        )
+                        else [self.diff_mask.placeholder],
+                        "lr": self.hparams.lr["beta"],
                     },
                 ],
                 centered=True,
             ),
             LookaheadRMSprop(
-                params=[self.alpha]
-                if isinstance(self.alpha, torch.Tensor)
-                else self.alpha.parameters(),
-                lr=self.hparams.lr_alpha,
+                params=[self.lamda]
+                if isinstance(self.lamda, torch.Tensor)
+                else self.lamda.parameters(),
+                lr=self.hparams.lr["lamda"],
             ),
         ]
 
@@ -248,9 +162,9 @@ class ImageInterpretationNet(pl.LightningModule):
                     p.grad = None
 
         elif optimizer_idx == 1:
-            for i in range(len(self.alpha)):
-                if self.alpha[i].grad:
-                    self.alpha[i].grad *= -1
+            for i in range(len(self.lamda)):
+                if self.lamda[i].grad:
+                    self.lamda[i].grad *= -1
 
             optimizer.step(closure=optimizer_closure)
             optimizer.zero_grad()
@@ -258,14 +172,14 @@ class ImageInterpretationNet(pl.LightningModule):
                 for p in g["params"]:
                     p.grad = None
 
-            for i in range(len(self.alpha)):
-                self.alpha[i].data = torch.where(
-                    self.alpha[i].data < 0,
-                    torch.full_like(self.alpha[i].data, 0),
-                    self.alpha[i].data,
+            for i in range(len(self.lamda)):
+                self.lamda[i].data = torch.where(
+                    self.lamda[i].data < 0,
+                    torch.full_like(self.lamda[i].data, 0),
+                    self.lamda[i].data,
                 )
-                self.alpha[i].data = torch.where(
-                    self.alpha[i].data > 200,
-                    torch.full_like(self.alpha[i].data, 200),
-                    self.alpha[i].data,
+                self.lamda[i].data = torch.where(
+                    self.lamda[i].data > 200,
+                    torch.full_like(self.lamda[i].data, 200),
+                    self.lamda[i].data,
                 )
