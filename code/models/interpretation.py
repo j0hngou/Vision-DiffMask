@@ -2,11 +2,13 @@ import pytorch_lightning as pl
 import torch
 
 from .gates import DiffMaskGateInput
+from math import sqrt
 from optimizer import LookaheadRMSprop
 from pytorch_lightning.core.optimizer import LightningOptimizer
 from torch import Tensor
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import _LRScheduler
+from torchmetrics import functional as TF
 from transformers import (
     get_constant_schedule_with_warmup,
     get_constant_schedule,
@@ -49,12 +51,12 @@ class ImageInterpretationNet(pl.LightningModule):
             param.requires_grad = False
 
         # Create DiffMask
-        # TODO: check arguments & modify DiffMask signature
+        # TODO: check arguments & modify DiffMask signature & num layers
         self.diff_mask = DiffMaskGateInput(
             hidden_size=self.model.config.hidden_size,
             hidden_attention=self.model.config.hidden_size // 4,
             max_position_embeddings=1,
-            num_hidden_layers=self.model.config.num_hidden_layers,
+            num_hidden_layers=self.model.config.num_hidden_layers+1,
         )
 
         # Create Lagrangian for dual optimization
@@ -68,26 +70,43 @@ class ImageInterpretationNet(pl.LightningModule):
         hidden_states = self.model(x, output_hidden_states=True).hidden_states
 
         # Forward hidden states through DiffMask
-        expected_L0_full = self.diff_mask(hidden_states=hidden_states, layer_pred=None)
+        log_expected_L0 = self.diff_mask(hidden_states=hidden_states, layer_pred=None)[-1]
+        
+        # Calculate mask
+        mask = log_expected_L0.sum(-1).exp()
+        mask = mask[:, 1:]
+        
+        # Reshape mask to match input shape
+        B, C, H, W = x.shape    # batch, channels, height, width
+        B, P = mask.shape       # batch, patches
+        
+        N = int(sqrt(P))    # patches per side
+        S = int(H / N)      # patch size
+        
+        mask = mask.reshape(B, 1, N, N)
+        mask = mask.repeat(1, C, S, S)
 
-        return expected_L0_full
+        return mask
 
     def training_step(self, batch: Tuple[Tensor, Tensor], *args, **kwargs) -> dict:
-        images, _ = batch
+        images, labels = batch
 
         # Pass original image from ViT and collect logits & hidden states
         outputs = self.model(images, output_hidden_states=True)
         logits_unmasked, hidden_states_unmasked = outputs.logits, outputs.hidden_states
 
         # Forward hidden states through DiffMask
-        deepest_layer = torch.randint(len(hidden_states_unmasked), ()).item()
+        # TODO: check why out-of-bounds without -1
+        deepest_layer = torch.randint(len(hidden_states_unmasked) - 1, ()).item()
         hidden_states_masked, _, expected_L0, _, _, = self.diff_mask(
             hidden_states=hidden_states_unmasked,
             layer_pred=deepest_layer,
         )
 
         # Set new hidden states in the ViT and forward again
-        hidden_states_masked = [hidden_states_masked] + [None] * (len(hidden_states_unmasked) - 1)
+        hidden_states_masked = [hidden_states_masked] + [None] * (
+            len(hidden_states_unmasked) - 1
+        )
         logits_masked, _ = vit_setter(self.model, images, hidden_states_masked)
 
         # Calculate loss
@@ -103,7 +122,14 @@ class ImageInterpretationNet(pl.LightningModule):
 
         loss = torch.mean(self.lamda[deepest_layer] * loss_c + loss_g, dim=-1)
 
-        # TODO: Log Metrics
+        # Log Metrics
+        self.log("train/loss", loss)
+        self.log("train/loss_c", loss_c.mean())
+        self.log("train/loss_g", loss_g.mean())
+        self.log("train/lamda", self.lamda[deepest_layer].mean())
+        self.log("trian/expected_L0", expected_L0.exp().sum(-1).mean())
+        self.log("train/acc", TF.accuracy(logits_masked, labels))
+        self.log("train/deepest_layer", deepest_layer)
 
         return loss
 
@@ -116,21 +142,14 @@ class ImageInterpretationNet(pl.LightningModule):
                         "lr": self.hparams.lr["diff_mask"],
                     },
                     {
-                        "params": self.diff_mask.placeholder.parameters()
-                        if isinstance(
-                            self.diff_mask.placeholder, torch.nn.ParameterList
-                        )
-                        else [self.diff_mask.placeholder],
+                        "params": [self.diff_mask.placeholder],
                         "lr": self.hparams.lr["beta"],
                     },
                 ],
                 centered=True,
             ),
             LookaheadRMSprop(
-                params=[self.lamda]
-                if isinstance(self.lamda, torch.Tensor)
-                else self.lamda.parameters(),
-                lr=self.hparams.lr["lamda"],
+                params=self.lamda.parameters(), lr=self.hparams.lr["lamda"]
             ),
         ]
 
@@ -141,6 +160,7 @@ class ImageInterpretationNet(pl.LightningModule):
             },
             get_constant_schedule(optimizers[1]),
         ]
+
         return optimizers, schedulers
 
     def optimizer_step(
@@ -154,32 +174,29 @@ class ImageInterpretationNet(pl.LightningModule):
         using_native_amp: bool = False,
         using_lbfgs: bool = False,
     ):
+        # Optimizer 0: Minimize loss w.r.t DiffMask's parameters
         if optimizer_idx == 0:
+            # Gradient ascent on phi & beta
             optimizer.step(closure=optimizer_closure)
             optimizer.zero_grad()
             for g in optimizer.param_groups:
                 for p in g["params"]:
                     p.grad = None
 
+        # Optimizer 1: Maximize loss w.r.t. langrangian lamda
         elif optimizer_idx == 1:
+            # Reverse the sign of lamda's gradients
             for i in range(len(self.lamda)):
                 if self.lamda[i].grad:
                     self.lamda[i].grad *= -1
 
+            # Gradient ascent on lamda
             optimizer.step(closure=optimizer_closure)
             optimizer.zero_grad()
             for g in optimizer.param_groups:
                 for p in g["params"]:
                     p.grad = None
 
+            # Clip lamda
             for i in range(len(self.lamda)):
-                self.lamda[i].data = torch.where(
-                    self.lamda[i].data < 0,
-                    torch.full_like(self.lamda[i].data, 0),
-                    self.lamda[i].data,
-                )
-                self.lamda[i].data = torch.where(
-                    self.lamda[i].data > 200,
-                    torch.full_like(self.lamda[i].data, 200),
-                    self.lamda[i].data,
-                )
+                self.lamda[i].data.clamp_(0, 200)
