@@ -93,6 +93,7 @@ class DrawMaskCallback(Callback):
 
         # Draw mask on sample images
         sample_images = [image for image in self.sample_images]
+        sample_images = [torch.repeat_interleave(sample_image, 3, 0) for sample_image in sample_images]
 
         sample_images_with_mask = [
             draw_mask_on_image(image, mask) for image, mask in zip(sample_images, masks)

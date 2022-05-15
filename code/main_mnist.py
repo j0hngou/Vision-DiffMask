@@ -11,6 +11,7 @@ from pytorch_lightning.loggers import WandbLogger
 from utils.plot import DrawMaskCallback
 import wandb
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def get_experiment_name(args: argparse.Namespace):
     # Convert to dictionary
@@ -37,18 +38,16 @@ def get_experiment_name(args: argparse.Namespace):
         ]
     )
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def main(args: argparse.Namespace):
     # Seed
 
-    alphas = [30., 20., 10]
-    lrs = [3e-4, 1e-4, 3e-5]
-    eps = [0.1]
-    lrs_alpha = [0.3, 0.03, 0.003]
-    mul_activations = [15., 10., 1.]
-    add_activations = [13., 10., 8.]
-    # Load the pretrained vit backbone
+    alphas = [1., 5., 10., 15., 20.]
+    lrs = [1e-5, 1e-4, 1e-3, 1e-2]
+    eps = [0, 0.001, 0.05, 0.1, 0.15]
+    lrs_alpha = [0.3, 0.03, 0.003, 0.0003]
+    mul_activations = [15., 10., 5., 3., 1.]
+    add_activations = [15., 10., 5., 3., 1.]
     mnist_cfg = ViTConfig(image_size=112, num_channels=1, num_labels=10)
     mnist_fe = ViTFeatureExtractor(
         size=mnist_cfg.image_size,
@@ -56,26 +55,19 @@ def main(args: argparse.Namespace):
         image_std=[0.5],
         return_tensors="pt",
     )
-    # vit = ViTForImageClassification(mnist_cfg)
-    # print(list(vit.named_parameters()))
-    # model = ImageClassificationNet.load_from_checkpoint(model=vit,
-    # checkpoint_path="/home/john/Desktop/MSc AI/DL2/Patch-DiffMask/checkpoints/MNIST/ImageClassificationNet_MNIST.ckpt",
-    # )
-    # print(list(model.model.named_parameters()))
-    # model.model.save_pretrained('/home/john/Desktop/MSc AI/DL2/Patch-DiffMask/checkpoints/MNIST/ImageClassificationNet_MNISTtest.ckpt')
-    # exit()
-    # vit = ViTForImageClassification(mnist_cfg)
-    # vit.save_pretrained('/home/john/Desktop/MSc AI/DL2/Patch-DiffMask/checkpoints/MNIST/ImageClassificationNet_MNISTtest.ckpt')
-
-    model = ViTForImageClassification.from_pretrained('/home/john/Desktop/MSc AI/DL2/Patch-DiffMask/checkpoints/MNIST/ImageClassificationNet_MNISTtest.ckpt',
+    vit = ViTForImageClassification(mnist_cfg)
+    model = ImageClassificationNet(vit).load_from_checkpoint(
+        checkpoint_path="/home/john/Desktop/MSc AI/DL2/Patch-DiffMask/checkpoints/MNIST/ImageClassificationNet_MNIST.ckpt",
     )
-    # model = ImageClassificationNet(vit)
+    model.model.save_pretrained('/home/john/Desktop/MSc AI/DL2/Patch-DiffMask/checkpoints/MNIST/ImageClassificationNet_MNISTtest.ckpt')
+    # vit.load_state_dict(torch.load('/home/john/Desktop/MSc AI/DL2/Patch-DiffMask/checkpoints/MNIST/ImageClassificationNet_MNIST.ckpt'))
+    # vit.save_pretrained('/home/john/Desktop/MSc AI/DL2/Patch-DiffMask/checkpoints/MNIST/ImageClassificationNet_MNISTtest.ckpt')
+    exit()
+    model = ImageClassificationNet(vit)
     # Load pre-trained Transformer
-    # checkpoint = torch.load(args.vit_ckpt, map_location=device)
-    # model.load_state_dict(checkpoint['state_dict'])
-    # model.eval()
-
-
+    checkpoint = torch.load(args.vit_ckpt)
+    model.load_state_dict(checkpoint['state_dict'], map_location=device)
+    model.eval()
     for alpha in alphas:
         for lr in lrs:
             for epsilon in eps:
@@ -84,9 +76,11 @@ def main(args: argparse.Namespace):
                         for add_activation in add_activations:
                             pl.seed_everything(args.seed)
 
-                            # Load CIFAR10 datamodule
+
+
+                            # Load MNIST datamodule
                             dm = MNISTDataModule(
-                                batch_size=128,
+                                batch_size=5,
                                 feature_extractor=mnist_fe,
                                 noise=args.add_noise,
                                 rotation=args.add_rotation,
@@ -100,14 +94,14 @@ def main(args: argparse.Namespace):
 
                             # Create Vision DiffMask for the model
                             diffmask = ImageInterpretationNet(
-                                model_cfg=mnist_cfg,
-                                alpha=alpha,
-                                lr=lr,
-                                eps=epsilon,
+                                model_cfg=model.config,
+                                alpha=args.alpha,
+                                lr=args.lr,
+                                eps=args.eps,
                                 lr_placeholder=args.lr_placeholder,
-                                lr_alpha=lr_alpha,
-                                mul_activation=mul_activation,
-                                add_activation=add_activation,
+                                lr_alpha=args.lr_alpha,
+                                mul_activation=args.mul_activation,
+                                add_activation=args.add_activation,
                             )
                             diffmask.set_vision_transformer(model)
 
@@ -125,8 +119,7 @@ def main(args: argparse.Namespace):
                             )
 
                             # Sample images & create mask callback
-                            sample_images, _ = next(iter(dm.train_dataloader()))
-                            sample_images = sample_images.to(device)
+                            sample_images, _ = next(iter(dm.val_dataloader()))
                             mask_cb = DrawMaskCallback(sample_images)
 
                             # Train
@@ -135,7 +128,6 @@ def main(args: argparse.Namespace):
                                 callbacks=[ckpt_cb, mask_cb],
                                 logger=wandb_logger,
                                 max_epochs=args.num_epochs,
-                                log_every_n_steps=50,
                             )
 
                             trainer.fit(diffmask, dm)
@@ -149,7 +141,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num_epochs",
         type=int,
-        default=500,
+        default=50,
         help="Number of epochs to train.",
     )
     parser.add_argument(
@@ -166,13 +158,76 @@ if __name__ == "__main__":
         default="tanlq/vit-base-patch16-224-in21k-finetuned-cifar10",
         help="Pre-trained Vision Transformer (ViT) model to load.",
     )
+
     parser.add_argument(
         "--vit_ckpt",
         type=str,
-        default="/home/john/Desktop/MSc AI/DL2/Patch-DiffMask/checkpoints/MNIST/ImageClassificationNet_MNIST.ckpt",
+        default="../checkpoints/MNIST/ImageClassificationNet_MNIST.ckpt",
         help="Pre-trained Vision Transformer (ViT) model to load.",
     )
 
+    # Data
+    parser.add_argument(
+        "--data_dir",
+        type=str,
+        default="data/mnist",
+        help="Directory containing MNIST dataset.",
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=4,
+        help="Number of workers for dataloader.",
+    )
+
+    # Augmentation
+    parser.add_argument(
+        "--add_blur",
+        action="store_true",
+        help="Add Gaussian blur to images.",
+    )
+    parser.add_argument(
+        "--add_noise",
+        action="store_true",
+        help="Add noise to images.",
+    )
+    parser.add_argument(
+        "--add_rotation",
+        action="store_true",
+        help="Add random rotation to images.",
+    )
+
+    # Interpretation model
+    parser.add_argument(
+        "--alpha",
+        type=float,
+        default=1.0,
+        help="Alpha parameter for the Vision DiffMask.",
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=1e-5,
+        help="Learning rate for the Vision DiffMask.",
+    )
+    parser.add_argument(
+        "--eps",
+        type=float,
+        default=0.0,
+        help="Epsilon parameter for the Vision DiffMask.",
+    )
+    parser.add_argument(
+        "--lr_placeholder",
+        type=float,
+        default=1e-5,
+        help="Learning rate for the placeholder.",
+    )
+    parser.add_argument(
+        "--lr_alpha",
+        type=float,
+        default=0.3,
+        help="Learning rate for the alpha parameter",
+    )
 
     # Interpretation model
     parser.add_argument(
@@ -228,7 +283,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dataset",
         type=str,
-        default="CIFAR10",
+        default="MNIST",
         help="The dataset to use.",
     )
     parser.add_argument(

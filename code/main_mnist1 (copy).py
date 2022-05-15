@@ -42,12 +42,12 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def main(args: argparse.Namespace):
     # Seed
 
-    alphas = [30., 20., 10]
-    lrs = [3e-4, 1e-4, 3e-5]
+    alphas = [20.]
+    lrs = [1e-5, 1e-4, 1e-3, 1e-2]
     eps = [0.1]
     lrs_alpha = [0.3, 0.03, 0.003]
-    mul_activations = [15., 10., 1.]
-    add_activations = [13., 10., 8.]
+    mul_activations = [15., 10., 5., 3., 1.]
+    add_activations = [15., 10., 5., 3., 1.]
     # Load the pretrained vit backbone
     mnist_cfg = ViTConfig(image_size=112, num_channels=1, num_labels=10)
     mnist_fe = ViTFeatureExtractor(
@@ -86,7 +86,7 @@ def main(args: argparse.Namespace):
 
                             # Load CIFAR10 datamodule
                             dm = MNISTDataModule(
-                                batch_size=128,
+                                batch_size=8,
                                 feature_extractor=mnist_fe,
                                 noise=args.add_noise,
                                 rotation=args.add_rotation,
@@ -125,8 +125,7 @@ def main(args: argparse.Namespace):
                             )
 
                             # Sample images & create mask callback
-                            sample_images, _ = next(iter(dm.train_dataloader()))
-                            sample_images = sample_images.to(device)
+                            sample_images, _ = next(iter(dm.val_dataloader()))
                             mask_cb = DrawMaskCallback(sample_images)
 
                             # Train
@@ -135,7 +134,6 @@ def main(args: argparse.Namespace):
                                 callbacks=[ckpt_cb, mask_cb],
                                 logger=wandb_logger,
                                 max_epochs=args.num_epochs,
-                                log_every_n_steps=50,
                             )
 
                             trainer.fit(diffmask, dm)
@@ -149,7 +147,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num_epochs",
         type=int,
-        default=500,
+        default=50,
         help="Number of epochs to train.",
     )
     parser.add_argument(
