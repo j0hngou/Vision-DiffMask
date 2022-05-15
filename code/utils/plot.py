@@ -24,7 +24,7 @@ def unnormalize(
         Tensor: the batch of images unnormalized.
     """
     unnormalized_images = images.clone()
-
+    mean, std = [0.5], [0.5]
     for i, (m, s) in enumerate(zip(mean, std)):
         unnormalized_images[:, i, :, :].mul_(s).add_(m)
 
@@ -82,6 +82,7 @@ class DrawMaskCallback(Callback):
     def __init__(self, sample_images: Tensor, log_every_n_steps: int = 200):
         self.sample_images = unnormalize(sample_images)
         self.log_every_n_steps = log_every_n_steps
+        self.batches = 0
 
     def _log_masks(self, trainer: Trainer, pl_module: LightningModule) -> None:
         # Predict mask
@@ -136,5 +137,6 @@ class DrawMaskCallback(Callback):
         unused: int = 0,
     ) -> None:
         # Log sample images every n steps
-        if batch_idx % self.log_every_n_steps == 0:
+        self.batches += 1
+        if self.batches % self.log_every_n_steps == 0:
             self._log_masks(trainer, pl_module)
