@@ -67,7 +67,7 @@ def main(args: argparse.Namespace):
     # vit = ViTForImageClassification(mnist_cfg)
     # vit.save_pretrained('/home/john/Desktop/MSc AI/DL2/Patch-DiffMask/checkpoints/MNIST/ImageClassificationNet_MNISTtest.ckpt')
 
-    model = ViTForImageClassification.from_pretrained('/home/john/Desktop/MSc AI/DL2/Patch-DiffMask/checkpoints/MNIST/ImageClassificationNet_MNISTtest.ckpt',
+    model = ViTForImageClassification.from_pretrained('../checkpoints/MNIST/ImageClassificationNet_MNISTtest.ckpt',
     )
     # model = ImageClassificationNet(vit)
     # Load pre-trained Transformer
@@ -169,7 +169,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--vit_ckpt",
         type=str,
-        default="/home/john/Desktop/MSc AI/DL2/Patch-DiffMask/checkpoints/MNIST/ImageClassificationNet_MNIST.ckpt",
+        default="../checkpoints/MNIST/ImageClassificationNet_MNIST.ckpt",
         help="Pre-trained Vision Transformer (ViT) model to load.",
     )
 
