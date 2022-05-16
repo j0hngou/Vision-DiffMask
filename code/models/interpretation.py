@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 from .gates import DiffMaskGateInput
 from math import sqrt
-from optimizer import LookaheadRMSprop
+from optimizer import LookaheadRMSprop, LookaheadAdam
 from pytorch_lightning.core.optimizer import LightningOptimizer
 from torch import Tensor
 from torch.optim import Optimizer
@@ -33,6 +33,7 @@ class ImageInterpretationNet(pl.LightningModule):
         lr_alpha: float = 0.3,
         mul_activation: float = 10.0,
         add_activation: float = 5.0,
+        placeholder: bool = False,
     ):
         super().__init__()
 
@@ -45,6 +46,7 @@ class ImageInterpretationNet(pl.LightningModule):
             max_position_embeddings=1,
             mul_activation=mul_activation,
             add_activation=add_activation,
+            placeholder=placeholder,
         )
 
         self.alpha = torch.nn.ParameterList(
@@ -228,7 +230,7 @@ class ImageInterpretationNet(pl.LightningModule):
 
     def configure_optimizers(self) -> Tuple[List[Optimizer], List[_LRScheduler]]:
         optimizers = [
-            LookaheadRMSprop(
+            LookaheadAdam(
                 params=[
                     {"params": self.gate.g_hat.parameters(), "lr": self.hparams.lr},
                     {
@@ -238,9 +240,9 @@ class ImageInterpretationNet(pl.LightningModule):
                         "lr": self.hparams.lr_placeholder,
                     },
                 ],
-                centered=True,
+                # centered=True, # this is for LookaheadRMSprop
             ),
-            LookaheadRMSprop(
+            LookaheadAdam(
                 params=[self.alpha]
                 if isinstance(self.alpha, torch.Tensor)
                 else self.alpha.parameters(),

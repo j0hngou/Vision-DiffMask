@@ -2,12 +2,12 @@ from torch import Tensor
 from torch.nn import Module
 from torch.utils.hooks import RemovableHandle
 from transformers import ViTForImageClassification
-from typing import Callable, Optional, Union
+from typing import Callable, Optional, Union, List, Tuple
 
 
 def _add_hooks(
     model: ViTForImageClassification, get_hook: Callable
-) -> list[RemovableHandle]:
+) -> List[RemovableHandle]:
     handles = (
         [model.vit.embeddings.patch_embeddings.register_forward_hook(get_hook(0))]
         + [
@@ -26,7 +26,7 @@ def _add_hooks(
 
 def vit_getter(
     model: ViTForImageClassification, x: Tensor
-) -> tuple[Tensor, list[Tensor]]:
+) -> Tuple[Tensor, List[Tensor]]:
     hidden_states_ = []
 
     def get_hook(i: int) -> Callable:
@@ -51,8 +51,8 @@ def vit_getter(
 
 
 def vit_setter(
-    model: ViTForImageClassification, x: Tensor, hidden_states: list[Optional[Tensor]]
-) -> tuple[Tensor, list[Tensor]]:
+    model: ViTForImageClassification, x: Tensor, hidden_states: List[Optional[Tensor]]
+) -> Tuple[Tensor, List[Tensor]]:
     hidden_states_ = []
 
     def get_hook(i: int):

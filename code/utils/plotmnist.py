@@ -6,13 +6,12 @@ from pytorch_lightning import LightningModule
 from pytorch_lightning.callbacks import Callback
 from pytorch_lightning.trainer import Trainer
 from torch import Tensor
-from  typing import *
 
 
 def unnormalize(
     images: Tensor,
-    mean: Tuple[int] = (0.5, 0.5, 0.5),
-    std: Tuple[int] = (0.5, 0.5, 0.5),
+    mean: tuple[int] = (0.5, 0.5, 0.5),
+    std: tuple[int] = (0.5, 0.5, 0.5),
 ) -> Tensor:
     """Reverts the normalization transformation applied before ViT.
 
@@ -25,30 +24,11 @@ def unnormalize(
         Tensor: the batch of images unnormalized.
     """
     unnormalized_images = images.clone()
-
-    mean = [0.5]
-    std = [0.5]
+    mean, std = [0.5], [0.5]
     for i, (m, s) in enumerate(zip(mean, std)):
         unnormalized_images[:, i, :, :].mul_(s).add_(m)
 
     return unnormalized_images
-
-
-def smoothen(mask: Tensor, patch_size: int = 16) -> Tensor:
-    """This function smoothens a mask by downsampling it and upsampling it with linear interpolation.
-
-    Args:
-        mask (Tensor): a 2D float torch tensor in [0, 1].
-        patch_size (int): the patch_size in pixels.
-
-    Returns:
-        A smoothened mask.
-    """
-    device = mask.device
-    (h, w) = mask.shape
-    mask = cv2.resize(mask.cpu().numpy(), (h // patch_size, w // patch_size), interpolation=cv2.INTER_NEAREST)
-    mask = cv2.resize(mask, (h, w), interpolation=cv2.INTER_LINEAR)
-    return torch.tensor(mask).to(device)
 
 
 def draw_mask_on_image(image: Tensor, mask: Tensor) -> Tensor:
@@ -102,17 +82,19 @@ class DrawMaskCallback(Callback):
     def __init__(self, sample_images: Tensor, log_every_n_steps: int = 200):
         self.sample_images = unnormalize(sample_images)
         self.log_every_n_steps = log_every_n_steps
+        self.batches = 0
 
     def _log_masks(self, trainer: Trainer, pl_module: LightningModule) -> None:
         # Predict mask
         with torch.no_grad():
             pl_module.eval()
-            masks = [smoothen(m) for m in pl_module.get_mask(self.sample_images)]
+            masks = pl_module.get_mask(self.sample_images)
             pl_module.train()
 
         # Draw mask on sample images
         sample_images = [image for image in self.sample_images]
         sample_images = [torch.repeat_interleave(sample_image, 3, 0) for sample_image in sample_images]
+
         sample_images_with_mask = [
             draw_mask_on_image(image, mask) for image, mask in zip(sample_images, masks)
         ]
@@ -130,7 +112,7 @@ class DrawMaskCallback(Callback):
         ], dim=1)
 
         # Compute masking percentage
-        masked_pixels_percentage = 100 * (1 - torch.stack(masks).mean().item())
+        masked_pixels_percentage = 100 * (1 - masks.mean().item())
 
         # Log with wandb
         trainer.logger.log_image(
@@ -151,10 +133,11 @@ class DrawMaskCallback(Callback):
         trainer: Trainer,
         pl_module: LightningModule,
         outputs: dict,
-        batch: Tuple[Tensor, Tensor],
+        batch: tuple[Tensor, Tensor],
         batch_idx: int,
         unused: int = 0,
     ) -> None:
         # Log sample images every n steps
-        if batch_idx % self.log_every_n_steps == 0:
+        self.batches += 1
+        if self.batches % self.log_every_n_steps == 0:
             self._log_masks(trainer, pl_module)

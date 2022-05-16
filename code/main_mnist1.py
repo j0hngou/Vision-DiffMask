@@ -86,7 +86,7 @@ def main(args: argparse.Namespace):
 
                             # Load CIFAR10 datamodule
                             dm = MNISTDataModule(
-                                batch_size=128,
+                                batch_size=64,
                                 feature_extractor=mnist_fe,
                                 noise=args.add_noise,
                                 rotation=args.add_rotation,
@@ -131,7 +131,7 @@ def main(args: argparse.Namespace):
 
                             # Train
                             trainer = pl.Trainer(
-                                accelerator="auto",
+                                gpus=1,
                                 callbacks=[ckpt_cb, mask_cb],
                                 logger=wandb_logger,
                                 max_epochs=args.num_epochs,
