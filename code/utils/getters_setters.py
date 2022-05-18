@@ -1,7 +1,7 @@
 from torch import Tensor
 from torch.nn import Module
 from torch.utils.hooks import RemovableHandle
-from transformers import ViTForImageClassification
+from transformers import ViTForImageClassification, ConvNextForImageClassification
 from typing import Callable, Optional, Union
 
 
@@ -84,6 +84,94 @@ def vit_setter(
         return hook
 
     handles = _add_hooks(model, get_hook)
+
+    try:
+        logits = model(x).logits
+    finally:
+        for handle in handles:
+            handle.remove()
+
+    return logits, hidden_states_
+
+
+def _add_hooks_convnext(
+    model: ConvNextForImageClassification, get_hook: Callable
+) -> list[RemovableHandle]:
+    handles = (
+        [model.convnext.embeddings.patch_embeddings.register_forward_hook(get_hook(0))]
+        + [
+            layer.register_forward_pre_hook(get_hook(i + 1))
+            for i, layer in enumerate(model.convnext.encoder.stages)
+        ]
+        + [
+            model.convnext.encoder.stages[-1].register_forward_hook(
+                get_hook(len(model.convnext.encoder.stages) + 1)
+            )
+        ]
+    )
+
+    return handles
+
+
+def convnext_getter(
+    model: ConvNextForImageClassification, x: Tensor
+) -> tuple[Tensor, list[Tensor]]:
+    hidden_states_ = []
+
+    def get_hook(i: int) -> Callable:
+        def hook(_: Module, inputs: tuple, outputs: Optional[tuple] = None):
+            if i == 0:
+                hidden_states_.append(outputs)
+            elif 1 <= i <= len(model.convnext.encoder.stages):
+                hidden_states_.append(inputs[0])
+            elif i == len(model.convnext.encoder.stages) + 1:
+                hidden_states_.append(outputs)
+
+        return hook
+
+    handles = _add_hooks_convnext(model, get_hook)
+    try:
+        logits = model(x).logits
+    finally:
+        for handle in handles:
+            handle.remove()
+
+    return logits, hidden_states_
+
+
+def convnext_setter(
+    model: ConvNextForImageClassification, x: Tensor, hidden_states: list[Optional[Tensor]]
+) -> tuple[Tensor, list[Tensor]]:
+    hidden_states_ = []
+
+    def get_hook(i: int):
+        def hook(
+            _: Module, inputs: tuple, outputs: Optional[tuple] = None
+        ) -> Optional[Union[tuple, Tensor]]:
+            if i == 0:
+                if hidden_states[i] is not None:
+                    hidden_states_.append(hidden_states[i])
+                    return hidden_states_[-1]
+                else:
+                    hidden_states_.append(outputs)
+
+            elif 1 <= i <= len(model.convnext.encoder.stages):
+                if hidden_states[i] is not None:
+                    hidden_states_.append(hidden_states[i])
+                    return (hidden_states[i],) + inputs[1:]
+                else:
+                    hidden_states_.append(inputs[0])
+
+            elif i == len(model.convnext.encoder.stages) + 1:
+                if hidden_states[i] is not None:
+                    hidden_states_.append(hidden_states[i])
+                    return hidden_states[i] #+ outputs[1:]
+                else:
+                    hidden_states_.append(outputs[0])
+
+        return hook
+
+    handles = _add_hooks_convnext(model, get_hook)
 
     try:
         logits = model(x).logits

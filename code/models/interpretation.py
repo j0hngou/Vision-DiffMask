@@ -1,10 +1,11 @@
 import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
+import torch.nn as nn
 
 from .gates import DiffMaskGateInput
 from math import sqrt
-from optimizer import LookaheadRMSprop, LookaheadAdam
+from optimizer import LookaheadAdam
 from pytorch_lightning.core.optimizer import LightningOptimizer
 from torch import Tensor
 from torch.optim import Optimizer
@@ -13,17 +14,18 @@ from transformers import (
     get_constant_schedule_with_warmup,
     get_constant_schedule,
     ViTForImageClassification,
+    ConvNextForImageClassification
 )
-from transformers.models.vit.configuration_vit import ViTConfig
+from transformers import ViTConfig, ConvNextConfig, PretrainedConfig
 from typing import Callable, List, Optional, Tuple, Union
-from utils.getters_setters import vit_getter, vit_setter
+from utils.getters_setters import vit_getter, vit_setter, convnext_getter, convnext_setter
 from utils.metrics import accuracy_precision_recall_f1
 
 
 class ImageInterpretationNet(pl.LightningModule):
     def __init__(
         self,
-        model_cfg: ViTConfig,
+        model_cfg: PretrainedConfig,
         alpha: float = 1,
         lr: float = 3e-4,
         eps: float = 0.1,
@@ -39,11 +41,21 @@ class ImageInterpretationNet(pl.LightningModule):
         super().__init__()
 
         self.save_hyperparameters()
+        if isinstance(model_cfg, ViTConfig):
+            num_layers = model_cfg.num_hidden_layers + 2
+            hidden_sizes = [model_cfg.hidden_size] * num_layers
+            mlp_hidden_sizes = [model_cfg.hidden_size // 4] * num_layers
+        elif isinstance(model_cfg, ConvNextConfig):
+            num_layers = len(model_cfg.hidden_sizes) + 2
+            hidden_sizes = [model_cfg.hidden_sizes[0]]*2 + model_cfg.hidden_sizes
+            mlp_hidden_sizes = [size // 4 for size in hidden_sizes]
+        else:
+            return
 
         self.gate = DiffMaskGateInput(
-            hidden_size=model_cfg.hidden_size,
-            hidden_attention=model_cfg.hidden_size // 4,
-            num_hidden_layers=model_cfg.num_hidden_layers + 2,
+            hidden_sizes=hidden_sizes,
+            mlp_hidden_sizes=mlp_hidden_sizes,
+            num_hidden_layers=num_layers,
             max_position_embeddings=1,
             mul_activation=mul_activation,
             add_activation=add_activation,
@@ -53,21 +65,21 @@ class ImageInterpretationNet(pl.LightningModule):
         self.alpha = torch.nn.ParameterList(
             [
                 torch.nn.Parameter(torch.ones(()) * alpha)
-                for _ in range(model_cfg.num_hidden_layers + 2)
+                for _ in range(num_layers)
             ]
         )
 
         self.register_buffer(
-            "running_acc", torch.ones((model_cfg.num_hidden_layers + 2,))
+            "running_acc", torch.ones((num_layers,))
         )
         self.register_buffer(
-            "running_l0", torch.ones((model_cfg.num_hidden_layers + 2,))
+            "running_l0", torch.ones((num_layers,))
         )
         self.register_buffer(
-            "running_steps", torch.zeros((model_cfg.num_hidden_layers + 2,))
+            "running_steps", torch.zeros((num_layers,))
         )
 
-    def set_vision_transformer(self, model: ViTForImageClassification):
+    def set_model(self, model: nn.Module):
         self.model = model
         for param in self.model.parameters():
             param.requires_grad = False
@@ -75,14 +87,18 @@ class ImageInterpretationNet(pl.LightningModule):
     def forward_explainer(
         self, x: Tensor, attribution: bool = False
     ) -> Union[Tensor, Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, int, int]]:
-        logits_orig, hidden_states = vit_getter(self.model, x)
+        if isinstance(self.model, ViTForImageClassification):
+            logits_orig, hidden_states = vit_getter(self.model, x)
 
-        # Add [CLS] token to deal with shape mismatch in self.gate() call
-        patch_embeddings = hidden_states[0]
-        batch_size = len(patch_embeddings)
+            # Add [CLS] token to deal with shape mismatch in self.gate() call
+            patch_embeddings = hidden_states[0]
+            batch_size = len(patch_embeddings)
 
-        cls_tokens = self.model.vit.embeddings.cls_token.expand(batch_size, -1, -1)
-        hidden_states[0] = torch.cat((cls_tokens, patch_embeddings), dim=1)
+            cls_tokens = self.model.vit.embeddings.cls_token.expand(batch_size, -1, -1)
+            hidden_states[0] = torch.cat((cls_tokens, patch_embeddings), dim=1)
+        elif isinstance(self.model, ConvNextForImageClassification):
+            logits_orig, hidden_states = convnext_getter(self.model, x)
+
 
         n_hidden = len(hidden_states)
         if self.hparams.weighted_layer_pred:
@@ -123,7 +139,10 @@ class ImageInterpretationNet(pl.LightningModule):
                 + [None] * (n_hidden - layer_drop - 1)
             )
 
-            logits, _ = vit_setter(self.model, x, new_hidden_states)
+            if isinstance(self.model, ViTForImageClassification):
+                logits, _ = vit_setter(self.model, x, new_hidden_states)
+            elif isinstance(self.model, ConvNextForImageClassification):
+                logits, _ = convnext_setter(self.model, x, new_hidden_states)
 
         return (
             logits,
@@ -277,21 +296,24 @@ class ImageInterpretationNet(pl.LightningModule):
     def get_mask(self, x: Tensor) -> Tensor:
         # TODO: change with forward_explainer
         # Forward input through freezed ViT & collect hidden states
-        _, hidden_states = vit_getter(self.model, x)
+        if isinstance(self.model, ViTForImageClassification):
+            _, hidden_states = vit_getter(self.model, x)
 
-        # Add [CLS] token to deal with shape mismatch in self.gate() call
-        patch_embeddings = hidden_states[0]
-        batch_size = len(patch_embeddings)
+            # Add [CLS] token to deal with shape mismatch in self.gate() call
+            patch_embeddings = hidden_states[0]
+            batch_size = len(patch_embeddings)
 
-        cls_tokens = self.model.vit.embeddings.cls_token.expand(batch_size, -1, -1)
-        hidden_states[0] = torch.cat((cls_tokens, patch_embeddings), dim=1)
+            cls_tokens = self.model.vit.embeddings.cls_token.expand(batch_size, -1, -1)
+            hidden_states[0] = torch.cat((cls_tokens, patch_embeddings), dim=1)
+        elif isinstance(self.model, ConvNextForImageClassification):
+            _, hidden_states = convnext_getter(self.model, x)
 
         # Forward hidden states through DiffMask
         _, _, expected_L0, _, _ = self.gate(hidden_states=hidden_states, layer_pred=None)
 
         # Calculate mask
         mask = expected_L0.exp()
-        mask = mask[:, 1:]
+        # mask = mask[:, 1:]
 
         # Reshape mask to match input shape
         B, C, H, W = x.shape  # batch, channels, height, width

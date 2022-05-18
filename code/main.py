@@ -4,7 +4,8 @@ import torch
 
 from datamodules import CIFAR10DataModule
 from models.interpretation import ImageInterpretationNet
-from transformers import ViTFeatureExtractor, ViTForImageClassification
+from transformers import ViTFeatureExtractor, ViTForImageClassification, \
+    ConvNextForImageClassification, ConvNextFeatureExtractor
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 from utils.plot import DrawMaskCallback
@@ -28,6 +29,7 @@ def get_experiment_name(args: argparse.Namespace):
         "sample_images",
         "seed",
         "vit_model",
+        "convnext_model",
     ]
 
     # Create experiment name from experiment arguments
@@ -44,15 +46,24 @@ def main(args: argparse.Namespace):
     # Seed
     pl.seed_everything(args.seed)
 
-    # Load pre-trained Transformer
-    model = ViTForImageClassification.from_pretrained(args.vit_model)
+    # Load model and feature extractor
+    if args.model == "ViT":
+        model = ViTForImageClassification.from_pretrained(args.vit_model)
+        feature_extractor = ViTFeatureExtractor.from_pretrained(
+            args.vit_model, return_tensors="pt"
+        )
+    elif args.model == "ConvNeXt":
+        model = ConvNextForImageClassification.from_pretrained(args.convnext_model)
+        feature_extractor = ConvNextFeatureExtractor.from_pretrained(
+            args.convnext_model, return_tensors="pt"
+        )
+    else:
+        return
 
     # Load CIFAR10 datamodule
     dm = CIFAR10DataModule(
         batch_size=args.batch_size,
-        feature_extractor=ViTFeatureExtractor.from_pretrained(
-            args.vit_model, return_tensors="pt"
-        ),
+        feature_extractor=feature_extractor,
         noise=args.add_noise,
         rotation=args.add_rotation,
         blur=args.add_blur,
@@ -76,7 +87,7 @@ def main(args: argparse.Namespace):
         placeholder=not args.no_placeholder,
         weighted_layer_pred=args.weighted_layer_distribution,
     )
-    diffmask.set_vision_transformer(model)
+    diffmask.set_model(model)
 
     # Create wandb logger instance
     wandb_logger = WandbLogger(
@@ -147,6 +158,15 @@ if __name__ == "__main__":
         help="Number of steps between logging media & checkpoints.",
     )
 
+    # Model
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="ViT",
+        choices=["ViT", "ConvNeXt"],
+        help="Model to use.",
+    )
+
     # Classification model
     parser.add_argument(
         "--vit_model",
@@ -155,17 +175,24 @@ if __name__ == "__main__":
         help="Pre-trained Vision Transformer (ViT) model to load.",
     )
 
+    parser.add_argument(
+        "--convnext_model",
+        default="convnext_cifar10",
+        type=str,
+        help="Pre-trained ConvNeXt model to load.",
+    )
+
     # Interpretation model
     parser.add_argument(
         "--alpha",
         type=float,
-        default=20.0,
+        default=5.0,
         help="Intial value for the Lagrangian",
     )
     parser.add_argument(
         "--lr",
         type=float,
-        default=2e-5,
+        default=2e-4,
         help="Learning rate for diffmask.",
     )
     parser.add_argument(
@@ -200,7 +227,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--add_activation",
         type=float,
-        default=8.0,
+        default=4.0,
         help="Value to add to gate activations.",
     )
     parser.add_argument(

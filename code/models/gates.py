@@ -6,6 +6,7 @@ Mask prediction models.
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from torch import Tensor
 from typing import Optional, Tuple
@@ -76,14 +77,21 @@ class MLPMaxGate(nn.Module):
         self.mul_activation = mul_activation
 
     def forward(self, *args: Tensor) -> Tensor:
-        return self.f(torch.cat(args, -1)) * self.mul_activation + self.add_activation
+        states = []
+        if len(args[0].shape) == 4:
+            for arg in args:
+                states += [arg.reshape(arg.shape[0], arg.shape[1], -1).permute(0, 2, 1)]
+            states[1] = states[1].repeat(1, states[0].shape[1] // states[1].shape[1], 1)
+        else:
+            states = list(args)
+        return self.f(torch.cat(states, -1)) * self.mul_activation + self.add_activation
 
 
 class DiffMaskGateInput(nn.Module):
     def __init__(
         self,
-        hidden_size: int,
-        hidden_attention: int,
+        hidden_sizes: list[int],
+        mlp_hidden_sizes: list[int],
         num_hidden_layers: int,
         max_position_embeddings: int,
         gate_fn: nn.Module = MLPMaxGate,
@@ -98,30 +106,30 @@ class DiffMaskGateInput(nn.Module):
         self.g_hat = nn.ModuleList(
             [
                 gate_fn(
-                    hidden_size * 2,
-                    hidden_attention,
+                    hidden_sizes[0] + hidden_sizes[i],
+                    mlp_hidden_sizes[i],
                     mul_activation,
                     add_activation,
                     gate_bias,
                 )
-                for _ in range(num_hidden_layers)
+                for i in range(num_hidden_layers)
             ]
         )
 
         if placeholder:
             self.placeholder = nn.Parameter(
                 nn.init.xavier_normal_(
-                    torch.empty((1, max_position_embeddings, hidden_size))
+                    torch.empty((1, max_position_embeddings, hidden_sizes[0]))
                 )
                 if init_vector is None
-                else init_vector.view(1, 1, hidden_size).repeat(
+                else init_vector.view(1, 1, hidden_sizes[0]).repeat(
                     1, max_position_embeddings, 1
                 )
             )
         else:
             self.register_buffer(
                 "placeholder",
-                torch.zeros((1, 1, hidden_size)),
+                torch.zeros((1, 1, hidden_sizes[0])),
             )
 
     def forward(
@@ -149,10 +157,22 @@ class DiffMaskGateInput(nn.Module):
         gates = gates_full[..., -1]
         expected_L0 = expected_L0_full[..., -1]
 
+        if len(hidden_states[0].shape) == 4:
+            # Hidden states is B x E x H x W
+            # Gates is B x 1 x H x W
+            gates = gates.reshape(gates.shape[0], 1, hidden_states[0].shape[-1], -1)
+            add = self.placeholder[:, : hidden_states[0].shape[-3]].reshape(1, -1, 1, 1)
+            add = add * (1 - gates)
+            output = hidden_states[0] * gates + add
+        else:
+            # Hidden states is B x T x E
+            # Gates is B x T x 1
+            output = hidden_states[0] * gates.unsqueeze(-1) + \
+                     self.placeholder[:, : hidden_states[0].shape[-2]] * (1 - gates).unsqueeze(-1)
+
+
         return (
-            hidden_states[0] * gates.unsqueeze(-1)
-            + self.placeholder[:, : hidden_states[0].shape[-2]]
-            * (1 - gates).unsqueeze(-1),
+            output,
             gates,
             expected_L0,
             gates_full,
