@@ -1,4 +1,4 @@
-from .image_classification import CIFAR10DataModule, ImageDataModule, MNISTDataModule
+from .image_classification import CIFAR10DataModule, ImageDataModule, MNISTDataModule, ImageNetDataModule
 from .visual_qa import CIFAR10QADataModule, ToyQADataModule
 from argparse import Namespace
 from transformers import ConvNextFeatureExtractor, ViTFeatureExtractor
@@ -52,6 +52,18 @@ def get_configs(args: Namespace) -> tuple[dict, dict]:
             "image_mean": [0.5, 0.5, 0.5],
             "image_std": [0.5, 0.5, 0.5],
         }
+
+    elif args.dataset == 'ImageNet':
+
+        model_cfg_args = {
+            "image_size": 224,
+            "num_channels": 3,
+            "num_labels": 1000
+        }
+        fe_cfg_args = {
+            "image_mean": [0.5, 0.5, 0.5],
+            "image_std": [0.5, 0.5, 0.5],
+        }
     else:
         raise Exception(f"Unknown dataset: {args.dataset}")
 
@@ -100,6 +112,8 @@ def datamodule_factory(args: Namespace) -> ImageDataModule:
         dm_class = MNISTDataModule
     elif args.dataset == "toy":
         dm_class = ToyQADataModule
+    elif args.dataset == 'ImageNet':
+        dm_class = ImageNetDataModule
     else:
         raise Exception(f"Unknown dataset: {args.dataset}")
 

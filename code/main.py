@@ -8,6 +8,7 @@ from transformers import ViTForImageClassification
 from typing import Generator
 from utils.plot import DrawMaskCallback
 
+
 import argparse
 import pytorch_lightning as pl
 import torch
@@ -58,7 +59,6 @@ def main(args: argparse.Namespace):
 
     # Load pre-trained Transformer
     model = ViTForImageClassification.from_pretrained(args.from_pretrained)
-
     # Load datamodule
     dm = datamodule_factory(args)
 
@@ -90,8 +90,8 @@ def main(args: argparse.Namespace):
     # Create checkpoint callback
     ckpt_cb = ModelCheckpoint(
         save_top_k=-1,
-        dirpath=f"checkpoints/{wandb_logger.version}",
-        every_n_train_steps=args.log_every_n_steps,
+        dirpath=f"checkpoints/{wandb_logger.version}_{args.seed}",
+        every_n_train_steps=1000,
     )
 
     # Sample images & create mask callback
@@ -163,7 +163,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--from_pretrained",
         type=str,
-        required=True,
+        required=False,
         default="tanlq/vit-base-patch16-224-in21k-finetuned-cifar10",
         help="The name of the pretrained HF model to load.",
     )
@@ -178,10 +178,9 @@ if __name__ == "__main__":
         "--dataset",
         type=str,
         default="CIFAR10",
-        choices=["MNIST", "CIFAR10", "CIFAR10_QA", "toy"],
+        choices=["MNIST", "CIFAR10", "CIFAR10_QA", "toy", "ImageNet"],
         help="The dataset to use.",
     )
-
     args = parser.parse_args()
 
     main(args)
