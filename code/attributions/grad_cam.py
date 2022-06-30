@@ -5,11 +5,12 @@ from torch import Tensor
 from transformers import ViTForImageClassification
 
 
-def grad_cam(images: Tensor, vit: ViTForImageClassification, use_cuda: bool = False) -> Tensor:
+def grad_cam(images: Tensor, vit: ViTForImageClassification, use_cuda: bool = False, target_layer_idx: int = -2,
+             layernorm_after: bool = True) -> Tensor:
     """Performs the Grad-CAM method on a batch of images (https://arxiv.org/pdf/1610.02391.pdf)."""
 
     # Wrap the ViT model to be compatible with GradCAM
-    vit = ViTWrapper(vit)
+    vit = ViTWrapper(vit, target_layer_idx, layernorm_after)
     vit.eval()
 
     # Create GradCAM object
@@ -31,7 +32,7 @@ def grad_cam(images: Tensor, vit: ViTForImageClassification, use_cuda: bool = Fa
     return torch.from_numpy(grayscale_cam)
 
 
-def _reshape_transform(tensor, height=14, width=14):
+def _reshape_transform(tensor):
     C, P, E = tensor.shape
     H = torch.sqrt(torch.tensor(P - 1)).int()
     W = torch.sqrt(torch.tensor(P - 1)).int()
@@ -46,13 +47,18 @@ def _reshape_transform(tensor, height=14, width=14):
 class ViTWrapper(torch.nn.Module):
     """ViT Wrapper to use with Grad-CAM."""
 
-    def __init__(self, vit: ViTForImageClassification):
+    def __init__(self, vit: ViTForImageClassification, target_layer_idx: int, layernorm_after: bool):
         super().__init__()
         self.vit = vit
+        self.target_layer_idx = target_layer_idx
+        self.layernorm_after = layernorm_after
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.vit(x).logits
 
     @property
     def target_layer(self):
-        return self.vit.vit.encoder.layer[-2].layernorm_after
+        if self.layernorm_after:
+            return self.vit.vit.encoder.layer[self.target_layer_idx].layernorm_after
+        else:
+            return self.vit.vit.encoder.layer[self.target_layer_idx].layernorm_before
