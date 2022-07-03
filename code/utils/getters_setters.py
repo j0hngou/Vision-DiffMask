@@ -51,8 +51,9 @@ def vit_getter(
                 hidden_states_.append(outputs)
             elif 1 <= i <= len(model.vit.encoder.layer):
                 hidden_states_.append(inputs[0])
-            elif i == len(model.vit.encoder.layer) + 1:
-                hidden_states_.append(outputs[0])
+            # FUTURE_REF: Use this if you need the last hidden state of the encoder
+            # elif i == len(model.vit.encoder.layer) + 1:
+            #     hidden_states_.append(outputs[0])
 
         return hook
 
@@ -101,13 +102,13 @@ def vit_setter(
                     return (hidden_states[i],) + inputs[1:]
                 else:
                     hidden_states_.append(inputs[0])
-
-            elif i == len(model.vit.encoder.layer) + 1:
-                if hidden_states[i] is not None:
-                    hidden_states_.append(hidden_states[i])
-                    return (hidden_states[i],) + outputs[1:]
-                else:
-                    hidden_states_.append(outputs[0])
+            # FUTURE_REF: Use this if you need the last hidden state of the encoder
+            # elif i == len(model.vit.encoder.layer) + 1:
+            #     if hidden_states[i] is not None:
+            #         hidden_states_.append(hidden_states[i])
+            #         return (hidden_states[i],) + outputs[1:]
+            #     else:
+            #         hidden_states_.append(outputs[0])
 
         return hook
 

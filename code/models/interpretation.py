@@ -128,7 +128,7 @@ class ImageInterpretationNet(pl.LightningModule):
         self.gate = DiffMaskGateInput(
             hidden_size=model_cfg.hidden_size,
             hidden_attention=model_cfg.hidden_size // 4,
-            num_hidden_layers=model_cfg.num_hidden_layers + 2,
+            num_hidden_layers=model_cfg.num_hidden_layers + 1,
             max_position_embeddings=1,
             mul_activation=mul_activation,
             add_activation=add_activation,
@@ -139,19 +139,19 @@ class ImageInterpretationNet(pl.LightningModule):
         self.alpha = torch.nn.ParameterList(
             [
                 torch.nn.Parameter(torch.ones(()) * alpha)
-                for _ in range(model_cfg.num_hidden_layers + 2)
+                for _ in range(model_cfg.num_hidden_layers + 1)
             ]
         )
 
         # Register buffers for running metrics
         self.register_buffer(
-            "running_acc", torch.ones((model_cfg.num_hidden_layers + 2,))
+            "running_acc", torch.ones((model_cfg.num_hidden_layers + 1,))
         )
         self.register_buffer(
-            "running_l0", torch.ones((model_cfg.num_hidden_layers + 2,))
+            "running_l0", torch.ones((model_cfg.num_hidden_layers + 1,))
         )
         self.register_buffer(
-            "running_steps", torch.zeros((model_cfg.num_hidden_layers + 2,))
+            "running_steps", torch.zeros((model_cfg.num_hidden_layers + 1,))
         )
 
     def set_vision_transformer(self, model: ViTForImageClassification):
