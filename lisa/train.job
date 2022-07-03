@@ -1,12 +1,12 @@
 #!/bin/bash
 
-#SBATCH --partition=gpu_shared_course
+#SBATCH --partition=gpu_titanrtx_shared_course
 #SBATCH --gres=gpu:1
 #SBATCH --job-name=Patch-DiffMask
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=3
-#SBATCH --time=01:00:00
-#SBATCH --mem=32000M
+#SBATCH --cpus-per-task=6
+#SBATCH --time=48:00:00
+#SBATCH --mem=100000M
 #SBATCH --output=lisa/outputs/patch_diffmask_train_%A.out
 
 module purge
@@ -15,4 +15,4 @@ module load Anaconda3/2021.05
 
 source activate dl2
 
-srun python -u code/main.py --add_activation 10.0 --num_epochs 1 --num_workers 3
+srun python -u code/main.py --add_activation 8.0 --num_epochs 25 --num_workers 6 --lr 1e-5 --lr_alpha 0.15 --lr_placeholder 0.0005 --mul_activation 15.0 --from_pretrained tanlq/vit-base-patch16-224-in21k-finetuned-cifar10 --batch_size 16 --dataset CIFAR10
