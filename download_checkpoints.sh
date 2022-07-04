@@ -1,8 +1,4 @@
 #!/bin/bash
-# Download toy checkpoints from archive.org and save them to the checkpoints directory.
-
-# Parse command line arguments
-
 POSITIONAL_ARGS=()
 
 while [[ $# -gt 0 ]]; do
