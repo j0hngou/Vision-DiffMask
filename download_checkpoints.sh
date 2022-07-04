@@ -4,7 +4,7 @@ POSITIONAL_ARGS=()
 while [[ $# -gt 0 ]]; do
 case $1 in
     -h|--help)
-        echo "Usage: download_checkpoints.sh [-h|--help] [-t|--download]"
+        echo "Usage: download_checkpoints.sh [-h|--help] [-t|--toy]"
         echo "Downloads checkpoints from archive.org and saves them to the checkpoints directory."
         echo "  -h, --help              Print this help message and exit"
         echo "  -t, --toy               Download checkpoints"
