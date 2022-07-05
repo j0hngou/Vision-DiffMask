@@ -212,6 +212,14 @@ if __name__ == "__main__":
         help="Name of the experiment.",
     )
 
+    parser.add_argument(
+        "--clip_max",
+        type=float,
+        default=200.,
+        help="Maximum value for the Lagrangian parameter alpha.",
+    )
+
+
     # Interpretation model
     ImageInterpretationNet.add_model_specific_args(parser)
 

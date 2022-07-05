@@ -102,6 +102,7 @@ class ImageInterpretationNet(pl.LightningModule):
         add_activation: float = 5.0,
         placeholder: bool = True,
         weighted_layer_pred: bool = False,
+        clip_max: Optional[float] = 200.,
     ):
         """A PyTorch Lightning Module for the VisionDiffMask model on the Vision Transformer.
 
@@ -142,6 +143,8 @@ class ImageInterpretationNet(pl.LightningModule):
                 for _ in range(model_cfg.num_hidden_layers + 1)
             ]
         )
+
+        self.clip_max = clip_max
 
         # Register buffers for running metrics
         self.register_buffer(
@@ -474,8 +477,8 @@ class ImageInterpretationNet(pl.LightningModule):
                     self.alpha[i].data,
                 )
                 self.alpha[i].data = torch.where(
-                    self.alpha[i].data > 200,
-                    torch.full_like(self.alpha[i].data, 200),
+                    self.alpha[i].data > self.clip_max,
+                    torch.full_like(self.alpha[i].data, self.clip_max),
                     self.alpha[i].data,
                 )
 
