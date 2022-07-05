@@ -219,6 +219,13 @@ if __name__ == "__main__":
         help="Maximum value for the Lagrangian parameter alpha.",
     )
 
+    parser.add_argument(
+        "--distloss",
+        type=str,
+        default="KL",
+        choices=["KL", "TVD"],
+        help="Distribution loss to use.",
+    )
 
     # Interpretation model
     ImageInterpretationNet.add_model_specific_args(parser)
